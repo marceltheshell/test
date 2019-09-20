@@ -72,21 +72,26 @@ function transform(payload) {
     
     let payloadEvents = payload.logEvents.filter((event) => console.log(event.message));
 
-    payloadEvents.forEach(function(logEvent) {
-    // payload.logEvents.forEach(function(logEvent) {
+    // payloadEvents.forEach(function(logEvent) {
+    
+    console.log('payloadEvents', JSON.stringify(payloadEvents));
+    payload.logEvents.forEach(function(logEvent) {
         console.log(`Event in --- ${logEvent.message}` ); 
        
-        // if (typeof logEvent.message !== 'object') {
-        //     const temp = logEvent.message;
-        //     logEvent.message = {};
-        //     logEvent.message.message = temp
-        // }
+       
 
         let messageStr = filterLogEvents(logEvent.message);
         
         if(messageStr != ''){    
             let source = buildSourceSPOC(messageStr);
             console.log('src' + JSON.stringify(source));
+            
+            if (typeof source !== 'object') {
+                const temp = source;
+                source = {};
+                source.bangalore = temp;
+            }
+            
             source.id = logEvent.id;
             source.timestamp = new Date(1 * logEvent.timestamp).toISOString();
             source.message = logEvent.message;
