@@ -69,12 +69,7 @@ function transform(payload) {
     }
 
     var requestBodies = [];
-    
-    // let payloadEvents = payload.logEvents.filter((event) => console.log(event.message));
 
-    payloadEvents.forEach(function(logEvent) {
-    
-    console.log('payloadEvents', JSON.stringify(payloadEvents));
     payload.logEvents.forEach(function(logEvent) {
         console.log(`Event in --- ${logEvent.message}` ); 
 
