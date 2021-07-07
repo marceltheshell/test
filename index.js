@@ -12,14 +12,14 @@ exports.handler = function(input, context) {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     // decode input from base64
     var zippedInput = new Buffer(input.awslogs.data, 'base64');
-
+    
     // decompress the input
     zlib.gunzip(zippedInput, function(error, buffer) {
         if (error) { context.fail(error); return; }
 
         // parse the input from JSON
         var awslogsData = JSON.parse(buffer.toString('utf8'));
-
+        console.log('awslogsData', awslogsData);
         // transform the input to multiple JSON documents for Logstash
         var requestData = transform(awslogsData);
 
@@ -32,7 +32,9 @@ exports.handler = function(input, context) {
 
         // put documents in Logstash
         var results = [];
+        
         function putLogs(element, index, array) {
+
             put(element, function(error, statusCode, responseBody) {
                 console.log('Response: ' + JSON.stringify({
                     "statusCode": statusCode
@@ -51,8 +53,8 @@ exports.handler = function(input, context) {
                 results.push(status);
             });
         }
-        requestData.forEach(putLogs);
 
+        requestData.forEach(putLogs); //this is the fuction where RESULTS gets populated
         results.forEach(function(element) {
             if (element.error) {
                 context.fail("Error posting message(s). See previous logs for more information.");
@@ -69,63 +71,92 @@ function transform(payload) {
     var requestBodies = [];
 
     payload.logEvents.forEach(function(logEvent) {
-        var timestamp = new Date(1 * logEvent.timestamp);
+        console.log(`Event in --- ${logEvent.message}` ); 
 
-        var source = buildSource(logEvent.message, logEvent.extractedFields);
-        source.id = logEvent.id;
-        source.timestamp = new Date(1 * logEvent.timestamp).toISOString();
-        source.message = logEvent.message;
-        source.owner = payload.owner;
-        source.log_group = payload.logGroup;
-        source.application = payload.logGroup;
-        source.log_stream = payload.logStream;
-        source.fields = {};
-        source.fields.group = process.env.FIELDS_GROUP;
-        source.type = process.env.LOG_INDEX;
+        let messageStr = filterLogEvents(logEvent.message);
+        
+        if(messageStr != ''){    
+            let source = buildSourceSPOC(messageStr);
+            console.log('src' + JSON.stringify(source));
+            if (typeof source !== 'object') {
+                source = {};
+            }            
+            source.id = logEvent.id;
+            source.timestamp = new Date(1 * logEvent.timestamp).toISOString();
+            source.message = logEvent.message;
+            source.owner = payload.owner;
+            source.log_group = payload.logGroup;
+            source.application = normaliseApplicationNames(payload.logGroup);
+            source.log_stream = payload.logStream;
+            source.fields = {};
+            source.fields.group = process.env.FIELDS_GROUP;
+            source.type = process.env.LOG_INDEX;
 
-        requestBodies.push(source);
+            console.log('ELK --- Message ----' + JSON.stringify(source));    
+            requestBodies.push(source);
+        }
     });
+   
     return requestBodies;
 }
 
-function buildSource(message, extractedFields) {
-    if (extractedFields) {
-        var source = {};
-
-        for (var key in extractedFields) {
-            if (extractedFields.hasOwnProperty(key) && extractedFields[key]) {
-                var value = extractedFields[key];
-
-                if (isNumeric(value)) {
-                    source[key] = 1 * value;
-                    continue;
-                }
-
-                jsonSubString = extractJson(value);
-                if (jsonSubString !== null) {
-                    source['$' + key] = JSON.parse(jsonSubString);
-                }
-
-                source[key] = value;
-            }
-        }
-        return source;
+function filterLogEvents(logevent){
+    let logStmt = '';
+    if(logevent.startsWith('info')){
+        logStmt = JSON.stringify(makeJSON(logevent.replace('info: ','')));
+    }else if(logevent.startsWith('debug')){
+         logStmt = JSON.stringify(makeJSON(logevent.replace('debug: ','')));
+    } else  if(logevent.startsWith(' error')){
+        logStmt =  JSON.stringify(makeJSON(logevent.replace(' error: ','')));
+    } else if(isValidJson(logevent)){
+        logStmt = logevent;
     }
-
-    jsonSubString = extractJson(message);
-    if (jsonSubString !== null) {
-        return JSON.parse(jsonSubString);
-    }
-
-    return {};
+    
+   
+    return logStmt;
 }
 
-function extractJson(message) {
-    var jsonStart = message.indexOf('{');
-    if (jsonStart < 0) return null;
-    var jsonSubString = message.substring(jsonStart);
-    return isValidJson(jsonSubString) ? jsonSubString : null;
+function buildSourceSPOC(message){
+        let loggerStmt = JSON.parse(message);
+        normaliseResponseBody(loggerStmt);
+        normaliseRequestBody(loggerStmt);
+        normaliseErrorResponse(loggerStmt);
+    return loggerStmt;
 }
+
+function normaliseRequestBody(loggerStmt) {
+     if (loggerStmt.request_body && isEmptyObject(loggerStmt.request_body)) {
+        let request_body = loggerStmt.response_body;
+        loggerStmt.request_body = stringifyJSON(request_body);
+    } else if (loggerStmt.request_body && isObject(loggerStmt.request_body)) {
+        let request_body = loggerStmt.response_body;
+        loggerStmt.request_body = stringifyJSON(request_body);
+    }
+
+
+}
+
+function normaliseResponseBody(loggerStmt) {
+
+    if (loggerStmt.response_body && isValidJson(loggerStmt.response_body)) {
+        let response_body = loggerStmt.response_body;
+        loggerStmt.response_body = stringifyJSON(response_body);
+
+    } else if (loggerStmt.response_body && isObject(loggerStmt.response_body)) {
+        let response_body = loggerStmt.response_body;
+        loggerStmt.response_body = stringifyJSON(response_body);
+    }
+
+}
+
+function normaliseErrorResponse(loggerStmt){
+       if (loggerStmt.errormessage && (isEmptyObject(loggerStmt.errormessage) || isObject(loggerStmt.errormessage))) {
+        let errormessage = loggerStmt.errormessage;
+        loggerStmt.errormessage = stringifyJSON(errormessage);
+     }
+}
+
+
 
 function isValidJson(message) {
     try {
@@ -134,9 +165,99 @@ function isValidJson(message) {
     return true;
 }
 
-function isNumeric(n) {
-    return !isNaN(parseFloat(n)) && isFinite(n);
+function isEmptyObject(obj) {
+    return JSON.stringify(obj) === '{}';
 }
+
+function isObject(obj) {
+    return obj instanceof Object
+}
+
+function stringifyJSON(data) {
+
+	let isString = typeof data === 'string';
+	if(isString){
+		return data;
+	} else {
+	return JSON.stringify(data);
+    }
+}
+
+
+function normaliseApplicationNames(logGroupName){
+    let formattedName = logGroupName;
+    if(logGroupName.includes('APIGateway')){
+        formattedName = 'APIGateway';
+    }else if(logGroupName.includes('Payport')){
+         formattedName = 'Payport';
+    }else if(logGroupName.includes('PayportAgent')){
+        formattedName = 'PayportAgent';
+    }else if(logGroupName.includes('amart')){
+        formattedName = 'amart';
+    }
+    
+    return formattedName;
+}
+
+function makeJSON(logevent){
+    let formattedStr = collapseArr(logevent)
+    let messageArr = formattedStr.split(', ');
+    return  messageArr.reduce((json, value ) => {
+		if(value){
+			let splitvalue = value.split('=')
+		 json[splitvalue[0]] = splitvalue[1]; 
+		}		
+	 return json; 
+	}, 
+	{});
+	
+    
+}
+
+function collapseArr(logevent){
+let openbraces = 0;
+let start = false;
+let innerstr = '';
+let rootStr = '';
+let lengthof = logevent.length;
+
+for(let i=0;i<lengthof;i++){
+	if(logevent.charAt(i) === '[' && logevent.charAt(i-1) === '=' ){
+		openbraces++;
+		start = true;
+		innerstr+=logevent.charAt(i);
+	}else if(start){
+		innerstr+=logevent.charAt(i);
+	} else {
+		rootStr+=logevent.charAt(i);
+	}
+
+	if(start && logevent.charAt(i) === ']'){
+		--openbraces;
+		if(openbraces === 0 ){
+			innerstr = innerstr.split(',').join('|');
+			innerstr = innerstr.split('=').join('|');
+			rootStr+=innerstr;
+			innerstr = '';
+			start = false;
+		}
+	}
+
+}
+
+let xmlstartIndex = rootStr.indexOf('<?');
+let xmllastIndex = rootStr.lastIndexOf('>,');
+let xmlvalue = rootStr.slice(xmlstartIndex,xmllastIndex);
+xmlvalue = xmlvalue.split(',').join('|');
+xmlvalue = xmlvalue.split('=').join('|');
+
+rootStr = rootStr.slice(0,xmlstartIndex)+ xmlvalue  + rootStr.slice(xmllastIndex);
+return rootStr;
+
+}
+
+
+
 
 function put(data, callback) {
     var requestParams = {
